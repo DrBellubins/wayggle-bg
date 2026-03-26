@@ -126,7 +126,7 @@ impl Graphics {
             egl::SURFACE_TYPE,
             egl::WINDOW_BIT,
             egl::RENDERABLE_TYPE,
-            egl::OPENGL_ES2_BIT,
+            egl::OPENGL_ES3_BIT,
             egl::NONE,
         ];
         let config = egl_instance
@@ -141,7 +141,7 @@ impl Graphics {
             })
             .unwrap();
 
-        let context_attributes = [egl::CONTEXT_CLIENT_VERSION, 2, egl::NONE];
+        let context_attributes = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];
         let egl_context = egl_instance
             .create_context(egl_display, config, None, &context_attributes)
             .inspect_err(|e| {

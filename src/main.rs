@@ -22,12 +22,21 @@ fn main() {
         "box".to_string(),
         include_str!("../shaders/box.glsl").to_string(),
     )]
-    .into_iter()
-    .collect::<std::collections::HashMap<String, String>>();
+        .into_iter()
+        .collect::<std::collections::HashMap<String, String>>();
 
     let (vertex_shader, fragment_shader) = match cli_configuration.command {
         cli::Command::ShaderToy { fragment_shader } => {
-            let fragment_shader = adaptors::shader_toy_adaptor(fragment_shader);
+            let fragment_src = std::fs::read_to_string(&fragment_shader).unwrap_or_else(|e| {
+                tracing::error!(
+                    "Failed to read fragment shader file '{}': {}",
+                    fragment_shader,
+                    e
+                );
+                std::process::exit(1);
+            });
+
+            let fragment_shader = adaptors::shader_toy_adaptor(fragment_src);
             (default_vertex_shader.clone(), fragment_shader)
         }
         cli::Command::TheBookOfShaders {
