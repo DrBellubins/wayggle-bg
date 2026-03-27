@@ -10,6 +10,7 @@ pub struct AppConfiguration {
     pub vertex_shader: String,
     pub fragment_shader: String,
     pub get_cursor: Option<Rc<fn() -> (f32, f32)>>,
+    pub fps: u32,
 }
 
 pub fn run(conf: AppConfiguration) {

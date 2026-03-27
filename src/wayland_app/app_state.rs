@@ -21,6 +21,7 @@ pub struct AppState {
     pub layer_shell: Option<(zwlr_layer_shell_v1::ZwlrLayerShellV1, u32)>,
     pub surface: Option<wl_surface::WlSurface>,
     pub layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
+    pub last_frame_time: Option<std::time::Instant>,
 }
 
 impl AppState {
@@ -35,6 +36,7 @@ impl AppState {
             layer_shell: None,
             surface: None,
             layer_surface: None,
+            last_frame_time: None,
         }
     }
 
@@ -174,13 +176,26 @@ impl Dispatch<wl_callback::WlCallback, ()> for AppState {
         match event {
             wl_callback::Event::Done { .. } => {
                 let _span_guard = tracing::trace_span!("wl_callback::Event::Done").entered();
-                // Frame callback done, can be used to trigger next render
+
                 if let (Some(graphics), Some(surface)) =
                     (state.graphics.as_ref(), state.surface.as_ref())
                 {
-                    let elapsed = state.start_time.elapsed().as_secs_f32();
-                    tracing::trace!("Rendering frame at elapsed time: {}", elapsed);
-                    graphics.render(elapsed);
+                    let fps = state.conf.fps.max(1);
+                    let frame_interval = std::time::Duration::from_secs_f64(1.0 / fps as f64);
+
+                    let now = std::time::Instant::now();
+                    let should_render = match state.last_frame_time {
+                        Some(last) => now.duration_since(last) >= frame_interval,
+                        None => true,
+                    };
+
+                    if should_render {
+                        let elapsed = state.start_time.elapsed().as_secs_f32();
+                        tracing::trace!("Rendering frame at elapsed time: {}", elapsed);
+                        graphics.render(elapsed);
+                        state.last_frame_time = Some(now);
+                    }
+
                     let _callback = surface.frame(qh, ());
                     surface.commit();
                 } else {

@@ -70,6 +70,7 @@ fn main() {
         vertex_shader,
         fragment_shader,
         get_cursor,
+        fps: cli_configuration.fps,
     };
     wayland_app::run(conf);
 }

@@ -9,6 +9,8 @@ pub struct Cli {
     pub command: Command,
     #[clap(short = 'c', long = "enable-cursor-support", value_name = "COMPOSITOR", value_enum, default_value_t = CursorSupportKind::Disabled)]
     pub cursor_support: CursorSupportKind,
+    #[clap(short = 'f', long = "fps", value_name = "FPS", default_value_t = 60)]
+    pub fps: u32,
 }
 
 #[derive(clap::Subcommand)]
