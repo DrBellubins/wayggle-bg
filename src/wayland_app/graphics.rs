@@ -8,6 +8,7 @@ use wayland_egl as wegl;
 
 use super::AppConfiguration;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Struct to manage EGL/OpenGL ES initialization and rendering using `glow`
 pub struct Graphics {
@@ -25,7 +26,7 @@ pub struct Graphics {
     vbo: glow::Buffer,
     time_uniform_location: Option<glow::UniformLocation>,
     resolution_uniform_location: Option<glow::UniformLocation>,
-    cursor_location_and_inspector: Option<(glow::UniformLocation, Rc<fn() -> (f32, f32)>)>,
+    cursor_location_and_inspector: Option<(glow::UniformLocation, Arc<dyn Fn() -> (f32, f32) + Send + Sync>)>,
 }
 
 impl Graphics {
