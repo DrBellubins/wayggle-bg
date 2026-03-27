@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use std::sync::mpsc::{Receiver, Sender};
-use super::render_thread::{RenderCommand, RenderEvent};
-
+use super::graphics::Graphics;
 use wayland_client::protocol::wl_display;
 use wayland_client::{
     Connection, Dispatch, QueueHandle,
@@ -13,10 +11,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_l
 use super::AppConfiguration;
 
 pub struct AppState {
-    pub render_tx: Option<Sender<RenderCommand>>,
-    pub render_rx: Option<Receiver<RenderEvent>>,
-    pub render_in_flight: bool,
-
+    pub graphics: Option<Graphics>,
     pub start_time: Instant,
     pub conf: AppConfiguration,
     pub closed: bool,
@@ -31,9 +26,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(display: wl_display::WlDisplay, conf: AppConfiguration) -> Self {
         AppState {
-            render_tx: None,
-            render_rx: None,
-            render_in_flight: false,
+            graphics: None,
             start_time: Instant::now(),
             conf,
             closed: false,
