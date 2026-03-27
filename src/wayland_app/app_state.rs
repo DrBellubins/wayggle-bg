@@ -143,7 +143,8 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
                 {
                     let graphics =
                         Graphics::new(&state.display, &surface, width, height, &state.conf);
-                    let elapsed = state.start_time.elapsed().as_secs_f32();
+                    let elapsed = state.start_time.elapsed().as_secs_f64();
+                    graphics.render(elapsed);
                     graphics.render(elapsed);
                     tracing::info!("Rendering initial frame");
                     let _callback = surface.frame(qh, ());
@@ -190,7 +191,7 @@ impl Dispatch<wl_callback::WlCallback, ()> for AppState {
                     };
 
                     if should_render {
-                        let elapsed = state.start_time.elapsed().as_secs_f32();
+                        let elapsed = state.start_time.elapsed().as_secs_f64();
                         tracing::trace!("Rendering frame at elapsed time: {}", elapsed);
                         graphics.render(elapsed);
                         state.last_frame_time = Some(now);

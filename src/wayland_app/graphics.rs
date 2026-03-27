@@ -24,12 +24,17 @@ pub struct Graphics {
     shader_program: glow::Program,
     vbo: glow::Buffer,
     time_uniform_location: Option<glow::UniformLocation>,
+    time_hi_lo_uniform_location: Option<glow::UniformLocation>,
     resolution_uniform_location: Option<glow::UniformLocation>,
     cursor_location_and_inspector: Option<(glow::UniformLocation, Rc<fn() -> (f32, f32)>)>,
 }
 
 impl Graphics {
-    pub fn render(&self, elapsed: f32) {
+    pub fn render(&self, elapsed_seconds: f64) {
+        // Split f64 seconds into two f32 values: hi = rounded float, lo = remainder
+        let hi = elapsed_seconds as f32;
+        let lo = (elapsed_seconds - hi as f64) as f32;
+
         self.egl_instance
             .make_current(
                 self.egl_display,
@@ -42,19 +47,23 @@ impl Graphics {
             })
             .unwrap();
 
-        // glow functions must be called inside an unsafe block
         unsafe {
             self.gl.viewport(0, 0, self.width, self.height);
-            // Pass the program handle wrapped in Option
             self.gl.use_program(Some(self.shader_program));
 
-            // Pass a reference to the UniformLocation
-            if let Some(location) = self.time_uniform_location {
-                self.gl.uniform_1_f32(Some(&location), elapsed);
+            // legacy uniform still set (some non-shadertoy shaders might use it)
+            if let Some(location) = self.time_uniform_location.as_ref() {
+                self.gl.uniform_1_f32(Some(location), hi);
             }
-            if let Some(location) = self.resolution_uniform_location {
+
+            // NEW: high precision time pair
+            if let Some(location) = self.time_hi_lo_uniform_location.as_ref() {
+                self.gl.uniform_2_f32(Some(location), hi, lo);
+            }
+
+            if let Some(location) = self.resolution_uniform_location.as_ref() {
                 self.gl
-                    .uniform_2_f32(Some(&location), self.width as f32, self.height as f32);
+                    .uniform_2_f32(Some(location), self.width as f32, self.height as f32);
             }
             if let Some((cursor_location, get_cursor)) = self.cursor_location_and_inspector.as_ref()
             {
@@ -62,7 +71,6 @@ impl Graphics {
                 self.gl.uniform_2_f32(Some(cursor_location), x, y);
             }
 
-            // Draw the rectangle
             self.gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
         }
 
@@ -232,8 +240,12 @@ impl Graphics {
             program
         };
 
-        let time_uniform_location = unsafe { gl.get_uniform_location(shader_program, "u_time") };
-
+        let time_uniform_location =
+            unsafe { gl.get_uniform_location(shader_program, "u_time") };
+        
+        let time_hi_lo_uniform_location =
+            unsafe { gl.get_uniform_location(shader_program, "u_time_hi_lo") };
+                
         let resolution_uniform_location =
             unsafe { gl.get_uniform_location(shader_program, "u_resolution") };
 
@@ -284,6 +296,7 @@ impl Graphics {
             shader_program,
             vbo,
             time_uniform_location,
+            time_hi_lo_uniform_location,
             resolution_uniform_location,
             cursor_location_and_inspector,
         }
