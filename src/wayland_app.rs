@@ -4,11 +4,7 @@ mod render_thread;
 
 use std::sync::Arc;
 
-use wayland_client::{
-    globals::registry_queue_init,
-    protocol::wl_compositor,
-    Connection, QueueHandle,
-};
+use wayland_client::Connection;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 #[derive(Clone)]
@@ -20,17 +16,27 @@ pub struct AppConfiguration {
 
 pub fn run(conf: AppConfiguration) {
     let conn = Connection::connect_to_env().unwrap();
+    let mut event_queue = conn.new_event_queue();
+    let qh = event_queue.handle();
 
-    // Robust global init (don’t rely on manual wl_registry Dispatch)
-    let (globals, mut event_queue) = registry_queue_init::<app_state::AppState>(&conn).unwrap();
-    let qh: QueueHandle<app_state::AppState> = event_queue.handle();
+    let display = conn.display();
+    display.get_registry(&qh, ());
 
-    // Bind required globals
-    let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=6, ()).unwrap();
-    let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = globals.bind(&qh, 1..=5, ()).unwrap();
+    let mut app_state = app_state::AppState::new(display.clone(), conf);
 
-    let surface = compositor.create_surface(&qh, ());
-    let layer_surface = layer_shell.get_layer_surface(
+    tracing::info!("Waiting for globals...");
+    event_queue.roundtrip(&mut app_state).unwrap();
+    tracing::info!("Globals received.");
+
+    let compositor = app_state.compositor.as_ref().expect("Compositor not found");
+    let surface = compositor.0.create_surface(&qh, ());
+    app_state.surface = Some(surface.clone());
+
+    let layer_shell = app_state
+        .layer_shell
+        .as_ref()
+        .expect("Layer shell not found");
+    let layer_surface = layer_shell.0.get_layer_surface(
         &surface,
         None,
         zwlr_layer_shell_v1::Layer::Bottom,
@@ -38,7 +44,6 @@ pub fn run(conf: AppConfiguration) {
         &qh,
         (),
     );
-
     layer_surface.set_exclusive_zone(-1);
     layer_surface.set_anchor(
         zwlr_layer_surface_v1::Anchor::Top
@@ -47,16 +52,14 @@ pub fn run(conf: AppConfiguration) {
             | zwlr_layer_surface_v1::Anchor::Right,
     );
     layer_surface.set_size(0, 0);
+    app_state.layer_surface = Some(layer_surface);
 
-    // Build state (now we already have all required objects)
-    let display = conn.display();
-    let mut state = app_state::AppState::new(display, compositor, surface, layer_surface, conf);
-
-    // This commit is what triggers the first configure
-    state.surface.commit();
+    surface.commit();
     tracing::info!("Initial commit done. Waiting for configure event...");
 
-    while state.is_running() {
-        event_queue.blocking_dispatch(&mut state).unwrap();
+    while app_state.is_running() {
+        event_queue.blocking_dispatch(&mut app_state).unwrap();
     }
+
+    tracing::info!("Exiting.");
 }

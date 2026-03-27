@@ -1,23 +1,27 @@
 use glow::HasContext;
 use khronos_egl as egl;
+
 use std::sync::Arc;
+
 use wayland_client::protocol::{wl_display, wl_surface};
 use wayland_client::Proxy;
 use wayland_egl as wegl;
 
 use super::AppConfiguration;
 
+/// Struct to manage EGL/OpenGL ES initialization and rendering using `glow`
 pub struct Graphics {
+    // Fix E0107: egl::Instance is generic in khronos-egl v6
     egl_instance: egl::Instance<egl::Static>,
     egl_display: egl::Display,
     egl_context: egl::Context,
     egl_surface: egl::Surface,
-
     wl_egl_surface: wegl::WlEglSurface,
     width: i32,
     height: i32,
 
     gl: glow::Context,
+
     shader_program: glow::Program,
     vbo: glow::Buffer,
 
@@ -28,6 +32,53 @@ pub struct Graphics {
 }
 
 impl Graphics {
+    pub fn render(&mut self, elapsed: f32) {
+        self.egl_instance
+            .make_current(
+                self.egl_display,
+                Some(self.egl_surface),
+                Some(self.egl_surface),
+                Some(self.egl_context),
+            )
+            .inspect_err(|e| tracing::error!("Failed to make EGL context current: {}", e))
+            .unwrap();
+
+        unsafe {
+            self.gl.viewport(0, 0, self.width, self.height);
+            self.gl.use_program(Some(self.shader_program));
+
+            if let Some(location) = self.time_uniform_location.as_ref() {
+                self.gl.uniform_1_f32(Some(location), elapsed);
+            }
+            if let Some(location) = self.resolution_uniform_location.as_ref() {
+                self.gl
+                    .uniform_2_f32(Some(location), self.width as f32, self.height as f32);
+            }
+            if let Some((cursor_location, get_cursor)) = self.cursor_location_and_inspector.as_ref()
+            {
+                let (x, y) = get_cursor();
+                self.gl.uniform_2_f32(Some(cursor_location), x, y);
+            }
+
+            self.gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+        }
+
+        self.egl_instance
+            .swap_buffers(self.egl_display, self.egl_surface)
+            .inspect_err(|e| tracing::error!("Failed to swap EGL buffers: {}", e))
+            .unwrap();
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.width = width as i32;
+        self.height = height as i32;
+        self.wl_egl_surface
+            .resize(width as i32, height as i32, 0, 0);
+        unsafe {
+            self.gl.viewport(0, 0, width as i32, height as i32);
+        }
+    }
+
     pub fn new(
         display: &wl_display::WlDisplay,
         surface: &wl_surface::WlSurface,
@@ -35,12 +86,15 @@ impl Graphics {
         height: u32,
         conf: &AppConfiguration,
     ) -> Self {
+        // Fix E0107 + typo from your attached file:
+        // egl::Instance::<egl::Static>::new(egl::Static)
         let egl_instance = egl::Instance::<egl::Static>::new(egl::Static);
 
         let egl_display = unsafe {
             egl_instance
                 .get_display(display.id().as_ptr() as egl::NativeDisplayType)
-                .expect("Failed to get EGL display")
+                .ok_or("Failed to get EGL display")
+                .unwrap()
         };
 
         egl_instance.initialize(egl_display).unwrap();
@@ -62,11 +116,11 @@ impl Graphics {
         let config = egl_instance
             .choose_first_config(egl_display, &attributes)
             .unwrap()
-            .expect("No EGL config");
+            .expect("Failed to find suitable EGL config");
 
-        let ctx_attrs = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];
+        let context_attributes = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];
         let egl_context = egl_instance
-            .create_context(egl_display, config, None, &ctx_attrs)
+            .create_context(egl_display, config, None, &context_attributes)
             .unwrap();
 
         let wl_egl_surface =
@@ -105,7 +159,11 @@ impl Graphics {
             gl.shader_source(vs, &conf.vertex_shader);
             gl.compile_shader(vs);
             if !gl.get_shader_compile_status(vs) {
-                panic!("VS compile: {}", gl.get_shader_info_log(vs));
+                tracing::error!(
+                    "Vertex shader compilation failed: {}",
+                    gl.get_shader_info_log(vs)
+                );
+                std::process::exit(1);
             }
             gl.attach_shader(program, vs);
 
@@ -113,13 +171,17 @@ impl Graphics {
             gl.shader_source(fs, &conf.fragment_shader);
             gl.compile_shader(fs);
             if !gl.get_shader_compile_status(fs) {
-                panic!("FS compile: {}", gl.get_shader_info_log(fs));
+                tracing::error!(
+                    "Fragment shader compilation failed: {}",
+                    gl.get_shader_info_log(fs)
+                );
+                std::process::exit(1);
             }
             gl.attach_shader(program, fs);
 
             gl.link_program(program);
             if !gl.get_program_link_status(program) {
-                panic!("Link: {}", gl.get_program_info_log(program));
+                panic!("{}", gl.get_program_info_log(program));
             }
 
             gl.detach_shader(program, fs);
@@ -127,6 +189,7 @@ impl Graphics {
             gl.detach_shader(program, vs);
             gl.delete_shader(vs);
 
+            gl.use_program(Some(program));
             program
         };
 
@@ -141,25 +204,25 @@ impl Graphics {
 
         let vbo = unsafe {
             let vertices: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
-            let bytes = core::slice::from_raw_parts(
+            let vertices_u8: &[u8] = core::slice::from_raw_parts(
                 vertices.as_ptr() as *const u8,
                 vertices.len() * std::mem::size_of::<f32>(),
             );
 
             let vbo = gl.create_buffer().unwrap();
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::STATIC_DRAW);
 
-            let loc = gl
+            let pos_attr_loc = gl
                 .get_attrib_location(shader_program, "a_position")
-                .expect("a_position missing");
-            gl.enable_vertex_attrib_array(loc);
-            gl.vertex_attrib_pointer_f32(loc, 2, glow::FLOAT, false, 0, 0);
+                .expect("Failed to get attribute location for a_position");
+            gl.enable_vertex_attrib_array(pos_attr_loc);
+            gl.vertex_attrib_pointer_f32(pos_attr_loc, 2, glow::FLOAT, false, 0, 0);
 
             vbo
         };
 
-        Self {
+        Graphics {
             egl_instance,
             egl_display,
             egl_context,
@@ -175,43 +238,27 @@ impl Graphics {
             cursor_location_and_inspector,
         }
     }
+}
 
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.width = width as i32;
-        self.height = height as i32;
-        self.wl_egl_surface.resize(self.width, self.height, 0, 0);
-    }
-
-    pub fn render(&mut self, elapsed: f32) {
-        self.egl_instance
-            .make_current(
-                self.egl_display,
-                Some(self.egl_surface),
-                Some(self.egl_surface),
-                Some(self.egl_context),
-            )
-            .unwrap();
-
+impl Drop for Graphics {
+    fn drop(&mut self) {
         unsafe {
-            self.gl.viewport(0, 0, self.width, self.height);
-            self.gl.use_program(Some(self.shader_program));
+            let _ = self
+                .egl_instance
+                .make_current(self.egl_display, None, None, None);
 
-            if let Some(loc) = self.time_uniform_location.as_ref() {
-                self.gl.uniform_1_f32(Some(loc), elapsed);
-            }
-            if let Some(loc) = self.resolution_uniform_location.as_ref() {
-                self.gl.uniform_2_f32(Some(loc), self.width as f32, self.height as f32);
-            }
-            if let Some((loc, get_cursor)) = self.cursor_location_and_inspector.as_ref() {
-                let (x, y) = get_cursor();
-                self.gl.uniform_2_f32(Some(loc), x, y);
-            }
+            self.gl.delete_program(self.shader_program);
+            self.gl.delete_buffer(self.vbo);
 
-            self.gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+            let _ = self
+                .egl_instance
+                .destroy_surface(self.egl_display, self.egl_surface);
+
+            let _ = self
+                .egl_instance
+                .destroy_context(self.egl_display, self.egl_context);
+
+            let _ = self.egl_instance.terminate(self.egl_display);
         }
-
-        self.egl_instance
-            .swap_buffers(self.egl_display, self.egl_surface)
-            .unwrap();
     }
 }
