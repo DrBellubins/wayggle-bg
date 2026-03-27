@@ -4,7 +4,6 @@ mod cursor_support;
 mod wayland_app;
 
 use clap::Parser as _;
-//use std::rc::Rc;
 use std::sync::Arc;
 
 fn main() {
@@ -25,7 +24,7 @@ fn main() {
         include_str!("../shaders/box.glsl").to_string(),
     )]
         .into_iter()
-        .collect::<std::collections::HashMap<String, String>>();
+        .collect::<std::collections::HashMap<_, _>>();
 
     let (vertex_shader, fragment_shader) = match cli_configuration.command {
         cli::Command::ShaderToy { fragment_shader } => {
@@ -45,35 +44,34 @@ fn main() {
             fragment_shader,
             vertex_shader,
         } => {
-            let fragment_shader = fragment_shader;
             let vertex_shader = vertex_shader.unwrap_or(default_vertex_shader);
             (vertex_shader, fragment_shader)
         }
         cli::Command::Default { name } => {
-            let fragment_shader = default_shaders
-                .get(&name)
-                .unwrap_or_else(|| {
-                    tracing::error!("Shader '{}' not found in default shaders", name);
-                    std::process::exit(1);
-                })
-                .clone();
-            let fragment_shader = adaptors::shader_toy_adaptor(fragment_shader);
+            let fragment_shader = default_shaders.get(&name).unwrap_or_else(|| {
+                tracing::error!("Shader '{}' not found in default shaders", name);
+                std::process::exit(1);
+            });
+
+            let fragment_shader = adaptors::shader_toy_adaptor(fragment_shader.clone());
             (default_vertex_shader.clone(), fragment_shader)
         }
     };
 
-    let get_cursor = match cli_configuration.cursor_support {
-        cli::CursorSupportKind::Hyprland => Some(Arc::new(
-            cursor_support::hyprland_get_cursor as fn() -> (f32, f32),
-        )),
-        cli::CursorSupportKind::Disabled => None,
-    };
-    
+    // Fix E0308: coerce fn pointer into Arc<dyn Fn() -> ...>
+    let get_cursor: Option<Arc<dyn Fn() -> (f32, f32) + Send + Sync>> =
+        match cli_configuration.cursor_support {
+            cli::CursorSupportKind::Hyprland => {
+                Some(Arc::new(|| cursor_support::hyprland_get_cursor()))
+            }
+            cli::CursorSupportKind::Disabled => None,
+        };
+
     let conf = wayland_app::AppConfiguration {
         vertex_shader,
         fragment_shader,
         get_cursor,
     };
-    
+
     wayland_app::run(conf);
 }

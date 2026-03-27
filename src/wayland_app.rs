@@ -2,11 +2,10 @@ mod app_state;
 mod graphics;
 mod RenderThread;
 
-use wayland_client::Connection;
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use std::sync::Arc;
 
-use std::rc::Rc;
+use wayland_client::Connection;
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 #[derive(Clone)]
 pub struct AppConfiguration {
