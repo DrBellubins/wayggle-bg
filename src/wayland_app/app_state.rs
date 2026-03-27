@@ -7,7 +7,7 @@ use super::render_thread::{run_render_thread, RenderCommand, RenderEvent};
 
 use wayland_client::protocol::{wl_callback, wl_compositor, wl_display, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle};
-use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 use wayland_client::globals::GlobalListContents;
 use wayland_client::protocol::wl_registry;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::State;
@@ -166,19 +166,6 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for AppState {
         _qh: &QueueHandle<AppState>,
     ) {
         // registry events are handled internally by registry_queue_init
-    }
-}
-
-impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for AppState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
-        _event: zwlr_layer_shell_v1::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<AppState>,
-    ) {
-        // No events to handle for zwlr_layer_shell_v1
     }
 }
 
