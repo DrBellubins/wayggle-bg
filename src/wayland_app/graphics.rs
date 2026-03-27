@@ -1,17 +1,17 @@
 use glow::HasContext;
+
 use khronos_egl as egl;
 
-use std::sync::Arc;
-
-use wayland_client::protocol::{wl_display, wl_surface};
-use wayland_client::Proxy;
+use wayland_client::protocol::wl_surface;
+use wayland_client::{Proxy, protocol::wl_display};
 use wayland_egl as wegl;
 
 use super::AppConfiguration;
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// Struct to manage EGL/OpenGL ES initialization and rendering using `glow`
 pub struct Graphics {
-    // Fix E0107: egl::Instance is generic in khronos-egl v6
     egl_instance: egl::Instance<egl::Static>,
     egl_display: egl::Display,
     egl_context: egl::Context,
@@ -24,15 +24,13 @@ pub struct Graphics {
 
     shader_program: glow::Program,
     vbo: glow::Buffer,
-
     time_uniform_location: Option<glow::UniformLocation>,
     resolution_uniform_location: Option<glow::UniformLocation>,
-    cursor_location_and_inspector:
-        Option<(glow::UniformLocation, Arc<dyn Fn() -> (f32, f32) + Send + Sync>)>,
+    cursor_location_and_inspector: Option<(glow::UniformLocation, Arc<dyn Fn() -> (f32, f32) + Send + Sync>)>,
 }
 
 impl Graphics {
-    pub fn render(&mut self, elapsed: f32) {
+    pub fn render(&self, elapsed: f32) {
         self.egl_instance
             .make_current(
                 self.egl_display,
@@ -40,19 +38,24 @@ impl Graphics {
                 Some(self.egl_surface),
                 Some(self.egl_context),
             )
-            .inspect_err(|e| tracing::error!("Failed to make EGL context current: {}", e))
+            .inspect_err(|e| {
+                tracing::error!("Failed to make EGL context current: {}", e);
+            })
             .unwrap();
 
+        // glow functions must be called inside an unsafe block
         unsafe {
             self.gl.viewport(0, 0, self.width, self.height);
+            // Pass the program handle wrapped in Option
             self.gl.use_program(Some(self.shader_program));
 
-            if let Some(location) = self.time_uniform_location.as_ref() {
-                self.gl.uniform_1_f32(Some(location), elapsed);
+            // Pass a reference to the UniformLocation
+            if let Some(location) = self.time_uniform_location {
+                self.gl.uniform_1_f32(Some(&location), elapsed);
             }
-            if let Some(location) = self.resolution_uniform_location.as_ref() {
+            if let Some(location) = self.resolution_uniform_location {
                 self.gl
-                    .uniform_2_f32(Some(location), self.width as f32, self.height as f32);
+                    .uniform_2_f32(Some(&location), self.width as f32, self.height as f32);
             }
             if let Some((cursor_location, get_cursor)) = self.cursor_location_and_inspector.as_ref()
             {
@@ -60,12 +63,15 @@ impl Graphics {
                 self.gl.uniform_2_f32(Some(cursor_location), x, y);
             }
 
+            // Draw the rectangle
             self.gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
         }
 
         self.egl_instance
             .swap_buffers(self.egl_display, self.egl_surface)
-            .inspect_err(|e| tracing::error!("Failed to swap EGL buffers: {}", e))
+            .inspect_err(|e| {
+                tracing::error!("Failed to swap EGL buffers: {}", e);
+            })
             .unwrap();
     }
 
@@ -86,19 +92,30 @@ impl Graphics {
         height: u32,
         conf: &AppConfiguration,
     ) -> Self {
-        // Fix E0107 + typo from your attached file:
-        // egl::Instance::<egl::Static>::new(egl::Static)
         let egl_instance = egl::Instance::<egl::Static>::new(egl::Static);
 
         let egl_display = unsafe {
             egl_instance
                 .get_display(display.id().as_ptr() as egl::NativeDisplayType)
                 .ok_or("Failed to get EGL display")
+                .inspect_err(|e| {
+                    tracing::error!("{}", e);
+                })
                 .unwrap()
         };
 
-        egl_instance.initialize(egl_display).unwrap();
-        egl_instance.bind_api(egl::OPENGL_ES_API).unwrap();
+        egl_instance
+            .initialize(egl_display)
+            .inspect_err(|e| {
+                tracing::error!("Failed to initialize EGL display: {}", e);
+            })
+            .unwrap();
+        egl_instance
+            .bind_api(egl::OPENGL_ES_API)
+            .inspect_err(|e| {
+                tracing::error!("Failed to bind EGL API: {}", e);
+            })
+            .unwrap();
 
         let attributes = [
             egl::RED_SIZE,
@@ -115,12 +132,22 @@ impl Graphics {
         ];
         let config = egl_instance
             .choose_first_config(egl_display, &attributes)
+            .inspect_err(|e| {
+                tracing::error!("Failed to choose EGL config: {}", e);
+            })
             .unwrap()
-            .expect("Failed to find suitable EGL config");
+            .ok_or("Failed to find suitable EGL config")
+            .inspect_err(|e| {
+                tracing::error!("{}", e);
+            })
+            .unwrap();
 
         let context_attributes = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];
         let egl_context = egl_instance
             .create_context(egl_display, config, None, &context_attributes)
+            .inspect_err(|e| {
+                tracing::error!("Failed to create EGL context: {}", e);
+            })
             .unwrap();
 
         let wl_egl_surface =
@@ -134,6 +161,9 @@ impl Graphics {
                     wl_egl_surface.ptr() as egl::NativeWindowType,
                     None,
                 )
+                .inspect_err(|e| {
+                    tracing::error!("Failed to create EGL surface: {}", e);
+                })
                 .unwrap()
         };
 
@@ -155,7 +185,12 @@ impl Graphics {
         let shader_program = unsafe {
             let program = gl.create_program().expect("Cannot create program");
 
-            let vs = gl.create_shader(glow::VERTEX_SHADER).unwrap();
+            let vs = gl
+                .create_shader(glow::VERTEX_SHADER)
+                .inspect_err(|e| {
+                    tracing::error!("Cannot create vertex shader: {}", e);
+                })
+                .unwrap();
             gl.shader_source(vs, &conf.vertex_shader);
             gl.compile_shader(vs);
             if !gl.get_shader_compile_status(vs) {
@@ -167,7 +202,12 @@ impl Graphics {
             }
             gl.attach_shader(program, vs);
 
-            let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
+            let fs = gl
+                .create_shader(glow::FRAGMENT_SHADER)
+                .inspect_err(|e| {
+                    tracing::error!("Cannot create fragment shader: {}", e);
+                })
+                .unwrap();
             gl.shader_source(fs, &conf.fragment_shader);
             gl.compile_shader(fs);
             if !gl.get_shader_compile_status(fs) {
@@ -194,13 +234,20 @@ impl Graphics {
         };
 
         let time_uniform_location = unsafe { gl.get_uniform_location(shader_program, "u_time") };
+
         let resolution_uniform_location =
             unsafe { gl.get_uniform_location(shader_program, "u_resolution") };
 
-        let cursor_location_and_inspector = conf.get_cursor.as_ref().and_then(|get_cursor| {
-            let cursor_location = unsafe { gl.get_uniform_location(shader_program, "u_mouse") };
-            cursor_location.map(|loc| (loc, get_cursor.clone()))
-        });
+        let cursor_location_and_inspector = match conf.get_cursor.as_ref() {
+            Some(get_cursor) => {
+                let cursor_location = unsafe { gl.get_uniform_location(shader_program, "u_mouse") };
+                match cursor_location {
+                    Some(cursor_location) => Some((cursor_location, get_cursor.clone())),
+                    None => None,
+                }
+            }
+            None => None,
+        };
 
         let vbo = unsafe {
             let vertices: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
@@ -215,7 +262,11 @@ impl Graphics {
 
             let pos_attr_loc = gl
                 .get_attrib_location(shader_program, "a_position")
-                .expect("Failed to get attribute location for a_position");
+                .ok_or("Failed to get attribute location for a_position")
+                .inspect_err(|e| {
+                    tracing::error!("{}", e);
+                })
+                .unwrap();
             gl.enable_vertex_attrib_array(pos_attr_loc);
             gl.vertex_attrib_pointer_f32(pos_attr_loc, 2, glow::FLOAT, false, 0, 0);
 
@@ -243,22 +294,41 @@ impl Graphics {
 impl Drop for Graphics {
     fn drop(&mut self) {
         unsafe {
-            let _ = self
-                .egl_instance
-                .make_current(self.egl_display, None, None, None);
+            // 1. Unbind EGL context
+            self.egl_instance
+                .make_current(self.egl_display, None, None, None)
+                .inspect_err(|e| {
+                    tracing::error!("Failed to unbind EGL context: {}", e);
+                })
+                .unwrap();
 
+            // 2. glow (OpenGL) resources cleanup
             self.gl.delete_program(self.shader_program);
             self.gl.delete_buffer(self.vbo);
 
-            let _ = self
-                .egl_instance
-                .destroy_surface(self.egl_display, self.egl_surface);
+            // 3. Destroy EGL surface
+            self.egl_instance
+                .destroy_surface(self.egl_display, self.egl_surface)
+                .inspect_err(|e| {
+                    tracing::error!("Failed to destroy EGL surface: {}", e);
+                })
+                .unwrap();
 
-            let _ = self
-                .egl_instance
-                .destroy_context(self.egl_display, self.egl_context);
+            // 4. Destroy EGL context
+            self.egl_instance
+                .destroy_context(self.egl_display, self.egl_context)
+                .inspect_err(|e| {
+                    tracing::error!("Failed to destroy EGL context: {}", e);
+                })
+                .unwrap();
 
-            let _ = self.egl_instance.terminate(self.egl_display);
+            // 5. Terminate connection to EGL display
+            self.egl_instance
+                .terminate(self.egl_display)
+                .inspect_err(|e| {
+                    tracing::error!("Failed to terminate EGL display: {}", e);
+                })
+                .unwrap();
         }
     }
 }
