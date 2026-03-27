@@ -1,17 +1,16 @@
-use std::sync::mpsc;
-use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
-use super::AppConfiguration;
-use super::RenderThread::run_render_thread;
-use super::RenderThread::{RenderCommand, RenderEvent};
+use std::sync::mpsc::{Receiver, Sender};
+use super::render_thread::{RenderCommand, RenderEvent};
 
 use wayland_client::protocol::wl_display;
 use wayland_client::{
-    protocol::{wl_callback, wl_compositor, wl_registry, wl_surface},
     Connection, Dispatch, QueueHandle,
+    protocol::{wl_callback, wl_compositor, wl_registry, wl_surface},
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
+use super::AppConfiguration;
 
 pub struct AppState {
     pub render_tx: Option<Sender<RenderCommand>>,
@@ -21,7 +20,6 @@ pub struct AppState {
     pub start_time: Instant,
     pub conf: AppConfiguration,
     pub closed: bool,
-
     // Wayland objects
     pub display: wl_display::WlDisplay,
     pub compositor: Option<(wl_compositor::WlCompositor, u32)>,
@@ -50,54 +48,6 @@ impl AppState {
     pub fn is_running(&self) -> bool {
         !self.closed
     }
-
-    fn drain_render_events(&mut self) {
-        if let Some(rx) = self.render_rx.as_ref() {
-            while let Ok(_evt) = rx.try_recv() {
-                self.render_in_flight = false;
-            }
-        }
-    }
-
-    fn try_request_render(&mut self) {
-        self.drain_render_events();
-
-        let Some(tx) = self.render_tx.as_ref() else {
-            return;
-        };
-
-        if self.render_in_flight {
-            // Renderer is busy; drop frame request on purpose.
-            return;
-        }
-
-        let elapsed = self.start_time.elapsed().as_secs_f32();
-        let _ = tx.send(RenderCommand::Render { elapsed });
-        self.render_in_flight = true;
-    }
-
-    fn ensure_render_thread_started(&mut self, surface: wl_surface::WlSurface, width: u32, height: u32) {
-        if self.render_tx.is_some() {
-            return;
-        }
-
-        let (cmd_tx, cmd_rx) = mpsc::channel::<RenderCommand>();
-        let (evt_tx, evt_rx) = mpsc::channel::<RenderEvent>();
-
-        let display = self.display.clone();
-        let wl_surface = surface; // already cloned by caller
-        let conf = self.conf.clone();
-
-        std::thread::spawn(move || {
-            run_render_thread(display, wl_surface, width, height, conf, cmd_rx, evt_tx);
-        });
-
-        self.render_tx = Some(cmd_tx);
-        self.render_rx = Some(evt_rx);
-
-        // Initial request (in-flight throttled)
-        self.try_request_render();
-    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
@@ -114,18 +64,25 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 name,
                 interface,
                 version,
-            } => match interface.as_str() {
-                "wl_compositor" => {
-                    tracing::info!("Compositor found: {} (version {})", name, version);
-                    state.compositor = Some((registry.bind(name, version, qh, ()), name));
+            } => {
+                let _span_guard =
+                    tracing::trace_span!("wl_registry::Event::Global", name, interface, version)
+                        .entered();
+                match interface.as_str() {
+                    "wl_compositor" => {
+                        tracing::info!("Compositor found: {} (version {})", name, version);
+                        state.compositor = Some((registry.bind(name, version, qh, ()), name));
+                    }
+                    "zwlr_layer_shell_v1" => {
+                        tracing::info!("LayerShell found: {} (version {})", name, version);
+                        state.layer_shell = Some((registry.bind(name, version, qh, ()), name));
+                    }
+                    _ => {}
                 }
-                "zwlr_layer_shell_v1" => {
-                    tracing::info!("LayerShell found: {} (version {})", name, version);
-                    state.layer_shell = Some((registry.bind(name, version, qh, ()), name));
-                }
-                _ => {}
-            },
+            }
             wl_registry::Event::GlobalRemove { name } => {
+                let _span_guard =
+                    tracing::trace_span!("wl_registry::Event::GlobalRemove", name).entered();
                 if let Some((_, compositor_name)) = &state.compositor {
                     if *compositor_name == name {
                         tracing::warn!("Compositor {} removed", name);
@@ -140,7 +97,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 }
             }
             _ => {}
-        }
+        };
+        return;
     }
 }
 
@@ -172,6 +130,12 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
                 width,
                 height,
             } => {
+                let _span_guard = tracing::trace_span!(
+                    "zwlr_layer_surface_v1::Event::Configure",
+                    serial,
+                    width,
+                    height
+                );
                 tracing::info!(
                     "Layer surface configured: serial={}, width={}, height={}",
                     serial,
@@ -179,28 +143,26 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
                     height
                 );
                 surface.ack_configure(serial);
-
-                // Fix E0502: clone the surface proxy first, then mutate state
-                let Some(wl_surface) = state.surface.as_ref().cloned() else { return; };
-
-                // Start render thread on first configure.
-                state.ensure_render_thread_started(wl_surface.clone(), width, height);
-
-                // Notify render thread about size changes.
-                if let Some(tx) = state.render_tx.as_ref() {
-                    let _ = tx.send(RenderCommand::Resize { width, height });
+                if let Some(surface) = state.surface.as_ref()
+                    && state.graphics.is_none()
+                {
+                    let graphics =
+                        Graphics::new(&state.display, &surface, width, height, &state.conf);
+                    let elapsed = state.start_time.elapsed().as_secs_f32();
+                    graphics.render(elapsed);
+                    tracing::info!("Rendering initial frame");
+                    let _callback = surface.frame(qh, ());
+                    surface.commit();
+                    state.graphics = Some(graphics);
+                } else if let Some(graphics) = state.graphics.as_mut() {
+                    graphics.resize(width, height);
                 }
-
-                // Schedule first/next frame
-                let _callback = wl_surface.frame(qh, ());
-                wl_surface.commit();
             }
             zwlr_layer_surface_v1::Event::Closed => {
+                let _span_guard =
+                    tracing::trace_span!("zwlr_layer_surface_v1::Event::Closed").entered();
                 tracing::info!("Layer surface closed");
                 state.closed = true;
-                if let Some(tx) = state.render_tx.as_ref() {
-                    let _ = tx.send(RenderCommand::Exit);
-                }
             }
             _ => (),
         }
@@ -218,16 +180,23 @@ impl Dispatch<wl_callback::WlCallback, ()> for AppState {
     ) {
         match event {
             wl_callback::Event::Done { .. } => {
-                // Always schedule the next frame quickly
-                if let Some(surface) = state.surface.as_ref() {
+                let _span_guard = tracing::trace_span!("wl_callback::Event::Done").entered();
+                // Frame callback done, can be used to trigger next render
+                if let (Some(graphics), Some(surface)) =
+                    (state.graphics.as_ref(), state.surface.as_ref())
+                {
+                    let elapsed = state.start_time.elapsed().as_secs_f32();
+                    tracing::trace!("Rendering frame at elapsed time: {}", elapsed);
+                    graphics.render(elapsed);
                     let _callback = surface.frame(qh, ());
                     surface.commit();
+                } else {
+                    tracing::trace!("No graphics or surface available for rendering.");
                 }
-
-                // Throttled render request (drops frames when busy)
-                state.try_request_render();
             }
-            _ => {}
+            _ => {
+                // Do nothing
+            }
         }
     }
 }
@@ -242,13 +211,23 @@ impl Dispatch<wl_surface::WlSurface, ()> for AppState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
+            wl_surface::Event::Enter { .. } => {
+                // Do nothing: Cursor enter event is not needed for background.
+            }
+            wl_surface::Event::Leave { .. } => {
+                // Do nothing: Cursor leave event is not needed for background.
+            }
             wl_surface::Event::PreferredBufferScale { factor } => {
+                // todo: HiDPI support
                 tracing::debug!("TODO: Handle preferred buffer scale factor: {}", factor);
             }
             wl_surface::Event::PreferredBufferTransform { transform } => {
+                // todo: Device rotation support
                 tracing::debug!("TODO: Handle preferred buffer transform: {:?}", transform);
             }
-            _ => {}
+            _ => {
+                // Do nothing
+            }
         }
     }
 }
