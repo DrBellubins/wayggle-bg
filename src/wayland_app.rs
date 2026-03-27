@@ -1,6 +1,6 @@
 mod app_state;
 mod graphics;
-mod render_thread;
+mod RenderThread;
 
 use std::sync::Arc;
 
