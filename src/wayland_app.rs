@@ -1,15 +1,18 @@
 mod app_state;
 mod graphics;
+mod RenderThread;
 
 use wayland_client::Connection;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+use std::sync::Arc;
 
 use std::rc::Rc;
 
+#[derive(Clone)]
 pub struct AppConfiguration {
     pub vertex_shader: String,
     pub fragment_shader: String,
-    pub get_cursor: Option<Rc<fn() -> (f32, f32)>>,
+    pub get_cursor: Option<Arc<dyn Fn() -> (f32, f32) + Send + Sync>>,
 }
 
 pub fn run(conf: AppConfiguration) {
