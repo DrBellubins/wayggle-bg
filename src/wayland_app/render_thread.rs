@@ -27,6 +27,7 @@ pub fn run_render_thread(
 ) {
     let mut graphics = Graphics::new(&display, &surface, width, height, &conf);
 
+    // Mark idle initially
     let _ = tx.send(RenderEvent::FrameComplete);
 
     while let Ok(cmd) = rx.recv() {
