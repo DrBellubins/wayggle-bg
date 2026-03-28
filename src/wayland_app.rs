@@ -11,6 +11,7 @@ pub struct AppConfiguration {
     pub fragment_shader: String,
     pub get_cursor: Option<Rc<fn() -> (f32, f32)>>,
     pub fps: u32,
+    pub initial_time_offset: f64,
 }
 
 pub fn run(conf: AppConfiguration) {

@@ -15,7 +15,7 @@ pub fn shader_toy_adaptor(fragment_shader: String) -> String {
 
         float iTime;
         vec3 iResolution;
-        vec2 iMouse;
+        vec iMouse;
 
         {fragment_shader}
 

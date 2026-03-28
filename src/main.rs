@@ -66,11 +66,13 @@ fn main() {
         )),
         cli::CursorSupportKind::Disabled => None,
     };
+
     let conf = wayland_app::AppConfiguration {
         vertex_shader,
         fragment_shader,
         get_cursor,
         fps: cli_configuration.fps,
+        initial_time_offset: cli_configuration.initial_time_offset,
     };
     wayland_app::run(conf);
 }

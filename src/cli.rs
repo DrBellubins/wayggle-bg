@@ -11,6 +11,8 @@ pub struct Cli {
     pub cursor_support: CursorSupportKind,
     #[clap(short = 'f', long = "fps", value_name = "FPS", default_value_t = 60)]
     pub fps: u32,
+    #[clap(short = 'o', long = "debugTimeOffset", value_name = "DebugTimeOffset", default_value_t = 0.0)]
+    pub initial_time_offset: f64,
 }
 
 #[derive(clap::Subcommand)]

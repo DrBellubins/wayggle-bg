@@ -143,7 +143,10 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
                 {
                     let graphics =
                         Graphics::new(&state.display, &surface, width, height, &state.conf);
-                    let elapsed = state.start_time.elapsed().as_secs_f64();
+                    
+                    let elapsed = state.start_time.elapsed().as_secs_f64() +
+                        state.conf.initial_time_offset;
+                    
                     graphics.render(elapsed);
                     graphics.render(elapsed);
                     tracing::info!("Rendering initial frame");
